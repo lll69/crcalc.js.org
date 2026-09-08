@@ -50,6 +50,8 @@ const CONFIG_TRIG = true;
 const CONFIG_TRIG_INV = true;
 const CONFIG_HYP = true;
 const CONFIG_HYP_INV = true;
+const CONFIG_VARIABLES = true;
+const CONFIG_CUSTOM_FUNCTIONS = false;
 // Switches
 const CONFIG_SW_INV = true;
 const CONFIG_SW_HYP = true;
@@ -89,6 +91,26 @@ const powBIMap = new Map();
 const powURMap = new Map();
 const freezeObject = Object.freeze;
 const postWorkerMessage = postMessage;
+const functions = freezeObject(new Set([
+    "ln", "log", "exp", "sqrt",
+    "sin", "cos", "tan",
+    "asin", "acos", "atan",
+    "arcsin", "arccos", "arctan",
+    "sinh", "cosh", "tanh",
+    "asinh", "acosh", "atanh",
+    "F", "G", "H",
+    "f", "g", "h",
+]));
+const unaryOps = freezeObject(new Set([
+    "unary+", "unary-", "unary+pow", "unary-pow", "!"
+]));
+const binaryOps = freezeObject(new Set([
+    "+", "-", "*", "/", "^"
+]));
+const customFunctions = freezeObject(new Set([
+    "F", "G", "H",
+    "f", "g", "h",
+]));
 function getURFromStr(str) {
     let cached = cachedURMap.get(str);
     if (cached === undefined) {
@@ -597,14 +619,6 @@ function tokenToRpn(tokenizeResult) {
         "+": 1,
         "-": 1
     });
-    const functions = freezeObject(new Set([
-        "ln", "log", "exp", "sqrt",
-        "sin", "cos", "tan",
-        "asin", "acos", "atan",
-        "arcsin", "arccos", "arctan",
-        "sinh", "cosh", "tanh",
-        "asinh", "acosh", "atanh",
-    ]));
     const rightAssocList = freezeObject(new Set([
         "unary+", "unary-", "unary+pow", "unary-pow", "^"
     ]));
@@ -671,23 +685,75 @@ function urToBigInt(ur) {
     }
     return null;
 }
-function createUR(expr, degreeMode) {
-    const unaryOps = freezeObject(new Set([
-        "unary+", "unary-", "unary+pow", "unary-pow", "!"
-    ]));
-    const binaryOps = freezeObject(new Set([
-        "+", "-", "*", "/", "^"
-    ]));
-    const functions = freezeObject(new Set([
-        "ln", "log", "exp", "sqrt",
-        "sin", "cos", "tan",
-        "asin", "acos", "atan",
-        "arcsin", "arccos", "arctan",
-        "sinh", "cosh", "tanh",
-        "asinh", "acosh", "atanh",
-    ]));
-    const tokenizeResult = tokenize(expr);
-    const rpnResult = tokenToRpn(tokenizeResult);
+function preprocessRpnResult(rpnResult, variables, definedFunctions) {
+    for (let i = 0; i < rpnResult.length; i++) {
+        const rpnItem = rpnResult[i];
+        const token = rpnItem[0];
+        const loc = rpnItem[1];
+        if (!binaryOps.has(token) && !unaryOps.has(token)) {
+            if (functions.has(token)) {
+                // Functions cannot be preprocessed
+            }
+            else {
+                const firstChar = token[0];
+                if (firstChar === "." || (firstChar >= "0" && firstChar <= "9")) {
+                    // number
+                }
+                else if (CONFIG_E && token === "e") {
+                    // e
+                }
+                else if (CONFIG_PI && token === "\u03C0") {
+                    // pi
+                }
+                else {
+                    let hasVariable = false;
+                    if (CONFIG_VARIABLES && variables) {
+                        switch (token) {
+                            case "a":
+                            case "b":
+                            case "c":
+                            case "i":
+                            case "j":
+                            case "k":
+                            case "m":
+                            case "n":
+                            case "x":
+                            case "y":
+                            case "z":
+                                let variableRpn = variables[token];
+                                if (variableRpn) {
+                                    if (variableRpn instanceof X) {
+                                        throw new Error("Unsupported UnifiedReal variable");
+                                    }
+                                    else {
+                                        hasVariable = true;
+                                        rpnResult.splice(i, 1, ...variableRpn);
+                                        i += variableRpn.length - 1;
+                                    }
+                                }
+                        }
+                    }
+                    if (!hasVariable)
+                        throw new Error("Unknown variable '" + token + "' at position [" + loc + "]");
+                }
+            }
+        }
+    }
+    return rpnResult;
+}
+function createUR(expr, degreeMode, variables, definedFunctions, noPosInError) {
+    let rpnResult;
+    if (typeof expr == "string") {
+        const tokenizeResult = tokenize(expr);
+        rpnResult = tokenToRpn(tokenizeResult);
+    }
+    else if (expr instanceof X) {
+        return [expr, []];
+    }
+    else {
+        rpnResult = expr;
+    }
+    rpnResult = preprocessRpnResult(rpnResult, variables);
     const len = rpnResult.length;
     const stack = [];
     for (let i = 0; i < len; i++) {
@@ -696,7 +762,7 @@ function createUR(expr, degreeMode) {
         const loc = rpnItem[1];
         if (binaryOps.has(token)) {
             if (stack.length < 2) {
-                throw new Error("Insufficient number of parameters for operator '" + token + "' at position [" + loc + "]");
+                throw new Error("Insufficient number of parameters for operator '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
             const arg1 = stack.pop();
             const arg0 = stack.pop();
@@ -733,12 +799,12 @@ function createUR(expr, degreeMode) {
             }
             catch (e) {
                 console.error(e);
-                throw new Error(e.message + " at position [" + loc + "]");
+                throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
         }
         else if (unaryOps.has(token)) {
             if (stack.length < 1) {
-                throw new Error("Insufficient number of parameters for operator '" + token + "' at position [" + loc + "]");
+                throw new Error("Insufficient number of parameters for operator '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
             const arg0 = stack.pop();
             try {
@@ -763,12 +829,12 @@ function createUR(expr, degreeMode) {
             }
             catch (e) {
                 console.error(e);
-                throw new Error(e.message + " at position [" + loc + "]");
+                throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
         }
         else if (functions.has(token)) {
             if (stack.length < 1) {
-                throw new Error("Insufficient number of parameters for function '" + token + "' at position [" + loc + "]");
+                throw new Error("Insufficient number of parameters for function '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
             const arg0 = stack.pop();
             try {
@@ -905,11 +971,29 @@ function createUR(expr, degreeMode) {
                         }
                         stack.push(getDivide(getLn(getDivide(getAdd(X.ONE, arg0), getSub(X.ONE, arg0))), X.TWO));
                         break;
+                    default:
+                        let hasFunction = false;
+                        if (CONFIG_CUSTOM_FUNCTIONS && definedFunctions) {
+                            let funRpn = definedFunctions[token];
+                            if (funRpn) {
+                                hasFunction = true;
+                                try {
+                                    stack.push(createUR(funRpn, degreeMode, { x: arg0 }, undefined, true)[0]);
+                                }
+                                catch (e) {
+                                    console.error(e);
+                                    throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
+                                }
+                            }
+                        }
+                        if (!hasFunction) {
+                            throw new Error("Undefined Function: " + token);
+                        }
                 }
             }
             catch (e) {
                 console.error(e);
-                throw new Error(e.message + " at position [" + loc + "]");
+                throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
         }
         else {
@@ -925,21 +1009,49 @@ function createUR(expr, degreeMode) {
                 stack.push(X.PI);
             }
             else {
-                throw new Error("Unknown variable '" + token + "' at position [" + loc + "]");
+                let hasVariable = false;
+                if (CONFIG_VARIABLES && variables) {
+                    switch (token) {
+                        case "a":
+                        case "b":
+                        case "c":
+                        case "i":
+                        case "j":
+                        case "k":
+                        case "m":
+                        case "n":
+                        case "x":
+                        case "y":
+                        case "z":
+                            let variableRpn = variables[token];
+                            if (variableRpn) {
+                                hasVariable = true;
+                                try {
+                                    stack.push(createUR(variableRpn, degreeMode, undefined, undefined, true)[0]);
+                                }
+                                catch (e) {
+                                    console.error(e);
+                                    throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
+                                }
+                            }
+                    }
+                }
+                if (!hasVariable)
+                    throw new Error("Unknown variable '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
         }
     }
     if (stack.length != 1) {
         throw new Error("Invalid stack length: " + stack.length);
     }
-    return stack.pop();
+    return [stack.pop(), rpnResult];
 }
 onmessage = function (e) {
     const msg = e.data;
     switch (msg.type) {
         case "createUR":
             try {
-                let ur = createUR(msg.expr, msg.degreeMode);
+                let [ur, rpnResult] = createUR(msg.expr, msg.degreeMode, msg.variables, msg.functions);
                 urList[msg.id] = ur;
                 let digitsRequired = ur.digitsRequiredByNumber();
                 let exactlyDisplayable = ur.exactlyDisplayable();
@@ -951,7 +1063,8 @@ onmessage = function (e) {
                     degreeMode: msg.degreeMode,
                     digitsRequired: digitsRequired,
                     exactlyDisplayable: exactlyDisplayable,
-                    success: true
+                    success: true,
+                    rpnResult: rpnResult,
                 });
             }
             catch (e) {

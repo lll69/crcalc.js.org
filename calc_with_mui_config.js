@@ -47387,6 +47387,8 @@ const CONFIG_TRIG = true;
 const CONFIG_TRIG_INV = true;
 const CONFIG_HYP = true;
 const CONFIG_HYP_INV = true;
+const CONFIG_VARIABLES = true;
+const CONFIG_CUSTOM_FUNCTIONS = false;
 // Switches
 const CONFIG_SW_INV = true;
 const CONFIG_SW_HYP = true;
@@ -47413,12 +47415,12 @@ const INITIAL_PREC = 32;
 const PREC_INCREMENT = 128;
 const INCREMENT_THRESHOLD = 64;
 const MAX_INITIAL_PREC = INITIAL_PREC + PREC_INCREMENT;
-const ENABLE_VARIABLES = false;
 let displayWidth = 25;
 let chWidth = 0;
 let degreeMode = false;
 let isInvert = false;
 let isShowHyp = false;
+let isShowFun1 = false;
 let simplifyRendered = false;
 let invRendered = false;
 let hypRendered = false;
@@ -47432,6 +47434,7 @@ const { setInterval: calc_setInterval, clearInterval: calc_clearInterval, setTim
 const createObjectURL = URL.createObjectURL;
 // @ts-ignore
 const replaceStr = "".replaceAll ? (s, a, b) => s.replaceAll(a, b) : (s, a, b) => s.split(a).join(b);
+const forEach = Array.prototype.forEach;
 const calculatorDiv = getElementById("calculator");
 const exprInput = getElementById("expression");
 const resultDiv = getElementById("result_div");
@@ -47482,6 +47485,15 @@ const inverseHypElements = [
     getElementById("react_acosh_root"),
     getElementById("react_atanh_root"),
 ];
+const funButtons = [
+    getElementById("fun_f"),
+    getElementById("fun_g"),
+];
+const varButtons = [
+    getElementById("var_x"),
+    getElementById("var_y"),
+    getElementById("var_z"),
+];
 const copyButton = getElementById("copy_result");
 const copyTruncatedButton = getElementById("copy_truncated");
 const copyIntegerButton = getElementById("copy_integer");
@@ -47489,8 +47501,6 @@ const saveButton = getElementById("save_result");
 const simplifyButton = getElementById("show_simplify");
 const simplifyReact = getElementById("react_simplify_root");
 const speedUpButton = getElementById("speed_up_scroll");
-const gridOps = getElementById("grid_ops");
-const gridVar = getElementById("grid_var");
 const loadingElement = getElementById("loading");
 const resultBoldTextNode = createTextNode("Loading...");
 const resultNormalTextNode = createTextNode("");
@@ -47504,6 +47514,7 @@ let workerUrl = null;
 let workerLoaded = false;
 let workerBusy = false;
 let needEnterNewExpr = false;
+let needEnterVariable = null;
 let hasResult = false;
 let hasError = false;
 let isResultSimplifiable = false;
@@ -47521,6 +47532,24 @@ let lastCalculateUid = 1;
 let loadAnimationIndex = 0;
 let loadAnimationInterval;
 let calcWaitTimeout;
+const VARIABLE_AVAIL = (/* unused pure expression or super */ null && (["a", "b", "c", "x", "y", "z"]));
+const FUNCTION_AVAIL = (/* unused pure expression or super */ null && (["F", "G", "H", "f", "g", "h"]));
+const variables = {
+    a: undefined,
+    b: undefined,
+    c: undefined,
+    x: undefined,
+    y: undefined,
+    z: undefined,
+};
+const functions = {
+    F: undefined,
+    G: undefined,
+    H: undefined,
+    f: undefined,
+    g: undefined,
+    h: undefined,
+};
 function showMessage(title, message, fallback, showCopy) {
     let shown = false;
     if (muiPlugin.showAlert) {
@@ -47842,6 +47871,9 @@ function onWorkerMessage(e) {
                 precisionCurrent = -1;
                 pointIndex = -1;
                 workerBusy = false;
+                if (CONFIG_VARIABLES && needEnterVariable !== null) {
+                    variables[needEnterVariable] = msg.rpnResult;
+                }
                 calculateHigherPrecision();
             }
             else {
@@ -47946,7 +47978,7 @@ function onLoadingError(e) {
     resultDiv.classList.remove("result-movable");
     resultBoldTextNode.textContent = crL10N["tryRefresh"] || "Try refreshing the page.";
     resultNormalTextNode.textContent = "";
-    Array.prototype.forEach.call(calculatorDiv.getElementsByTagName("button"), (e) => {
+    forEach.call(calculatorDiv.getElementsByTagName("button"), (e) => {
         e.disabled = true;
     });
 }
@@ -48048,6 +48080,17 @@ function preprocessExpr() {
         exprInput.selectionStart = exprInput.selectionEnd = expr.length;
     }
 }
+function showError(errString) {
+    hasResult = false;
+    hasError = true;
+    workerBusy = false;
+    calc_clearTimeout(calcWaitTimeout);
+    buttonCalc.innerText = "=";
+    resultDiv.classList.remove("result-movable");
+    resultBoldTextNode.textContent = errString;
+    resultNormalTextNode.textContent = "";
+    changeResultUIVisibility();
+}
 function calculateResult() {
     if (!workerLoaded)
         return;
@@ -48060,22 +48103,25 @@ function calculateResult() {
     }
     clearResult();
     onCalculatorResize();
+    preprocessExpr();
     if (exprInput.value === "") {
         focusExpression();
         return;
     }
-    preprocessExpr();
     needEnterNewExpr = true;
-    buttonCalc.innerText = "STOP";
     worker.postMessage({ type: "removeUR", id: lastCalculateId });
     lastCalculateId = (lastCalculateId + 1) | 0;
     changeResultUIVisibility();
+    needEnterVariable = null;
+    buttonCalc.innerText = "STOP";
     worker.postMessage({
         type: "createUR",
         id: lastCalculateId,
         uid: lastCalculateId,
         expr: exprInput.value,
-        degreeMode: degreeMode
+        degreeMode: degreeMode,
+        variables: CONFIG_VARIABLES ? variables : undefined,
+        functions: CONFIG_CUSTOM_FUNCTIONS ? functions : undefined,
     });
     workerBusy = true;
     calc_clearTimeout(calcWaitTimeout);
@@ -48086,8 +48132,34 @@ function focusExpression() {
         exprInput.focus();
     }
 }
+function refreshFunVarButtons() {
+    if (CONFIG_VARIABLES) {
+        if (!isInvert) { // read
+            forEach.call("xyz", (ch, idx) => {
+                varButtons[idx].textContent = ch;
+            });
+        }
+        else { // write
+            forEach.call("xyz", (ch, idx) => {
+                varButtons[idx].textContent = "→" + ch;
+            });
+        }
+    }
+    if (CONFIG_CUSTOM_FUNCTIONS) {
+        if (!isInvert) { // read
+            forEach.call("fg", (ch, idx) => {
+                funButtons[idx].textContent = ch + "( )";
+            });
+        }
+        else { // write
+            forEach.call("fg", (ch, idx) => {
+                funButtons[idx].textContent = "→" + ch;
+            });
+        }
+    }
+}
 function refreshInverseButton() {
-    buttonInv.title = invReact.title = isInvert ? (crL10N["hideInv"] || "Hide inverse functions") : (crL10N["showInv"] || "Show inverse functions");
+    buttonInv.title = invReact.title = isInvert ? (crL10N["hideInv"] || "Hide second functions") : (crL10N["showInv"] || "Show second functions");
     if (CONFIG_SW_INV && invRendered) {
         if (isInvert) {
             buttonInv.classList.add("op-hide");
@@ -48098,6 +48170,7 @@ function refreshInverseButton() {
             invReact.classList.add("op-hide");
         }
     }
+    refreshFunVarButtons();
 }
 function refreshInverse() {
     for (const button of normalButtons) {
@@ -48706,41 +48779,41 @@ if (CONFIG_UI_SPEED_SCROLL) {
         }
     });
 }
-if (!ENABLE_VARIABLES) {
-    let varButton = getElementById("but_var");
-    varButton.disabled = true;
-    varButton.innerText = "";
+if (!CONFIG_VARIABLES && !CONFIG_CUSTOM_FUNCTIONS) {
+    document.getElementById("fun_var_line")?.classList.add("grid-hide");
 }
-getElementById("but_var").addEventListener("click", () => {
-    if (!ENABLE_VARIABLES || !workerLoaded)
-        return;
-    gridOps.classList.add("grid-hide");
-    gridVar.classList.remove("grid-hide");
-    focusExpression();
-});
-getElementById("var_close").addEventListener("click", () => {
-    if (!workerLoaded)
-        return;
-    gridOps.classList.remove("grid-hide");
-    gridVar.classList.add("grid-hide");
-    focusExpression();
-});
-function registerVariable(name) {
-    getElementById("var_in_" + name).addEventListener("click", () => {
-        if (!ENABLE_VARIABLES || !workerLoaded)
-            return;
-        throw new Error("Not yet implemented");
-    });
-    getElementById("var_out_" + name).addEventListener("click", () => {
-        if (!ENABLE_VARIABLES || !workerLoaded)
-            return;
-        appendConst(name);
-        focusExpression();
+if (CONFIG_CUSTOM_FUNCTIONS) {
+    funButtons.forEach(button => {
+        button.addEventListener("click", () => {
+            if (!isInvert) {
+                appendFunction(button.dataset.fun);
+            }
+            else {
+            }
+            focusExpression();
+        });
     });
 }
-registerVariable("x");
-registerVariable("y");
-registerVariable("z");
+else {
+    funButtons.forEach(button => button.disabled = true);
+}
+if (CONFIG_VARIABLES) {
+    varButtons.forEach(button => {
+        button.addEventListener("click", () => {
+            if (!isInvert) {
+                appendConst(button.dataset.variable);
+                focusExpression();
+            }
+            else {
+                calculateResult();
+                needEnterVariable = button.dataset.variable;
+            }
+        });
+    });
+}
+else {
+    varButtons.forEach(button => button.disabled = true);
+}
 function disallowScroll(element) {
     let eLastScrollLeft = 0;
     let eHaveFocus = false;
@@ -54984,6 +55057,8 @@ const CONFIG_TRIG = true;
 const CONFIG_TRIG_INV = true;
 const CONFIG_HYP = true;
 const CONFIG_HYP_INV = true;
+const CONFIG_VARIABLES = true;
+const CONFIG_CUSTOM_FUNCTIONS = false;
 // Switches
 const CONFIG_SW_INV = true;
 const CONFIG_SW_HYP = true;
@@ -55134,7 +55209,7 @@ if (CONFIG_UI_SIMPLIFY && reactRoot.dataset.simp === "true") {
     postMessage("simplifyRendered");
 }
 if (CONFIG_FUNCTION_PANEL && CONFIG_SW_INV && reactRoot.dataset.inv === "true") {
-    client.createRoot(getElementById("react_inv_root")).render((0,jsx_runtime.jsx)(ButtonApp, { text: "INV", click: () => { calc_mui_plugin.onInvButtonClick && calc_mui_plugin.onInvButtonClick(); } }));
+    client.createRoot(getElementById("react_inv_root")).render((0,jsx_runtime.jsx)(ButtonApp, { text: "2ndF", click: () => { calc_mui_plugin.onInvButtonClick && calc_mui_plugin.onInvButtonClick(); } }));
     postMessage("invRendered");
 }
 
