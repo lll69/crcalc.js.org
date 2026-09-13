@@ -685,12 +685,24 @@ function urToBigInt(ur) {
     }
     return null;
 }
-function preprocessRpnResult(rpnResult, degreeMode, variables, definedFunctions, noPosInError, isFun) {
+function overrideRpnLoc(rpnResult, loc) {
+    rpnResult = [...rpnResult];
+    const len = rpnResult.length;
+    for (let i = 0; i < len; i++) {
+        rpnResult[i] = freezeObject([rpnResult[i][0], loc]);
+    }
+    return rpnResult;
+}
+function preprocessRpnResult(rpnResult, degreeMode, variables, definedFunctions, noPosInError, isFunDef, overrideLoc) {
     rpnResult = [...rpnResult];
     for (let i = 0; i < rpnResult.length; i++) {
         const rpnItem = rpnResult[i];
         const token = rpnItem[0];
-        const loc = rpnItem[1];
+        const locOrigin = rpnItem[1];
+        const loc = overrideLoc || locOrigin;
+        if (loc !== locOrigin) {
+            rpnResult[i] = freezeObject([token, loc]);
+        }
         if (!binaryOps.has(token) && !unaryOps.has(token)) {
             if (functions.has(token)) {
                 // Functions cannot be preprocessed before variables
@@ -708,7 +720,7 @@ function preprocessRpnResult(rpnResult, degreeMode, variables, definedFunctions,
                 }
                 else {
                     let hasVariable = false;
-                    if (CONFIG_CUSTOM_FUNCTIONS && isFun && token == "x") {
+                    if (CONFIG_CUSTOM_FUNCTIONS && isFunDef && token == "x") {
                         hasVariable = true;
                     }
                     else if ((CONFIG_VARIABLES || (CONFIG_CUSTOM_FUNCTIONS && token == "x")) && variables) {
@@ -730,6 +742,7 @@ function preprocessRpnResult(rpnResult, degreeMode, variables, definedFunctions,
                                         throw new Error("Unsupported UnifiedReal variable");
                                     }
                                     else {
+                                        variableRpn = overrideRpnLoc(variableRpn, loc);
                                         hasVariable = true;
                                         rpnResult.splice(i, 1, ...variableRpn);
                                         i += variableRpn.length - 1;
@@ -774,7 +787,7 @@ function preprocessRpnResult(rpnResult, degreeMode, variables, definedFunctions,
                 if (funRpn) {
                     try {
                         const arg0 = stack.pop();
-                        stack.push(preprocessRpnResult(funRpn, degreeMode, { x: arg0 }, undefined, true, isFun));
+                        stack.push(preprocessRpnResult(funRpn, degreeMode, { x: arg0 }, undefined, true, false, loc));
                         hasFunction = true;
                     }
                     catch (e) {
