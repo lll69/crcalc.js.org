@@ -47388,7 +47388,7 @@ const CONFIG_TRIG_INV = true;
 const CONFIG_HYP = true;
 const CONFIG_HYP_INV = true;
 const CONFIG_VARIABLES = true;
-const CONFIG_CUSTOM_FUNCTIONS = false;
+const CONFIG_CUSTOM_FUNCTIONS = true;
 // Switches
 const CONFIG_SW_INV = true;
 const CONFIG_SW_HYP = true;
@@ -47489,8 +47489,9 @@ const funButtons = [
     getElementById("fun_f"),
     getElementById("fun_g"),
 ];
+const varXButton = getElementById("var_x");
 const varButtons = [
-    getElementById("var_x"),
+    varXButton,
     getElementById("var_y"),
     getElementById("var_z"),
 ];
@@ -47532,6 +47533,8 @@ let lastCalculateUid = 1;
 let loadAnimationIndex = 0;
 let loadAnimationInterval;
 let calcWaitTimeout;
+let eLastScrollLeft = 0;
+let eHaveFocus = false;
 const VARIABLE_AVAIL = (/* unused pure expression or super */ null && (["a", "b", "c", "x", "y", "z"]));
 const FUNCTION_AVAIL = (/* unused pure expression or super */ null && (["F", "G", "H", "f", "g", "h"]));
 const variables = {
@@ -47943,6 +47946,51 @@ function onWorkerMessage(e) {
                 showMessage(title, text, () => title2 + text, true);
             }
             break;
+        case "createFunRpn":
+            if (msg.success) {
+                hasResult = false;
+                hasError = false;
+                workerBusy = false;
+                calc_clearTimeout(calcWaitTimeout);
+                buttonCalc.innerText = "=";
+                resultDiv.classList.remove("result-movable");
+                resultBoldTextNode.textContent = "Success";
+                resultNormalTextNode.textContent = "";
+                if (CONFIG_CUSTOM_FUNCTIONS && needEnterVariable !== null) {
+                    functions[needEnterVariable] = msg.rpnResult;
+                }
+                changeResultUIVisibility();
+            }
+            else {
+                hasResult = false;
+                hasError = true;
+                workerBusy = false;
+                calc_clearTimeout(calcWaitTimeout);
+                buttonCalc.innerText = "=";
+                resultDiv.classList.remove("result-movable");
+                resultBoldTextNode.textContent = msg.error;
+                resultNormalTextNode.textContent = "";
+                let errString = String(msg.error);
+                let match = errString.match(/at position \[(\d+),(\d+)\]/);
+                if (match) {
+                    focusExpression();
+                    let start = Number(match[1]);
+                    exprInput.selectionStart = start;
+                    exprInput.selectionEnd = Number(match[2]);
+                    exprInput.scrollLeft = chWidth * (start > 0 ? start - 1 : start);
+                }
+                match = errString.match(/at position \((\d+)\)/);
+                if (match) {
+                    focusExpression();
+                    let start = Number(match[1]);
+                    exprInput.selectionStart = start;
+                    exprInput.selectionEnd = start + 1;
+                    exprInput.scrollLeft = chWidth * (start > 0 ? start - 1 : start);
+                }
+                scrollToErrorIfNeeded(errString, "Error: ArithmeticException: ");
+                changeResultUIVisibility();
+            }
+            break;
     }
 }
 function onWorkerError(e) {
@@ -47986,7 +48034,6 @@ function clearResult() {
     resultDiv.classList.remove("result-movable");
     resultBoldTextNode.textContent = "";
     resultNormalTextNode.textContent = "";
-    loadingElement.hidden = true;
     needEnterNewExpr = false;
     hasResult = false;
     hasError = false;
@@ -48091,7 +48138,7 @@ function showError(errString) {
     resultNormalTextNode.textContent = "";
     changeResultUIVisibility();
 }
-function calculateResult() {
+function calculateResultWithFunction(isFun, funName) {
     if (!workerLoaded)
         return;
     if (workerBusy) {
@@ -48112,10 +48159,10 @@ function calculateResult() {
     worker.postMessage({ type: "removeUR", id: lastCalculateId });
     lastCalculateId = (lastCalculateId + 1) | 0;
     changeResultUIVisibility();
-    needEnterVariable = null;
+    needEnterVariable = funName || null;
     buttonCalc.innerText = "STOP";
     worker.postMessage({
-        type: "createUR",
+        type: isFun ? "createFunRpn" : "createUR",
         id: lastCalculateId,
         uid: lastCalculateId,
         expr: exprInput.value,
@@ -48127,8 +48174,26 @@ function calculateResult() {
     calc_clearTimeout(calcWaitTimeout);
     calcWaitTimeout = calc_setTimeout(onCalcTimeout, 5000);
 }
+function calculateResult() {
+    calculateResultWithFunction(false);
+}
 function focusExpression() {
     if (workerLoaded) {
+        const html = document.documentElement;
+        const lastScrollTop = html.scrollTop;
+        const lastScrollLeft = html.scrollLeft;
+        if (!eHaveFocus) {
+            const focusTime = Date.now();
+            const scrollListener = (e) => {
+                document.removeEventListener("scroll", scrollListener, true);
+                if (Date.now() - focusTime < 100) {
+                    e.stopImmediatePropagation();
+                    html.scrollTop = lastScrollTop;
+                    html.scrollLeft = lastScrollLeft;
+                }
+            };
+            document.addEventListener("scroll", scrollListener, true);
+        }
         exprInput.focus();
     }
 }
@@ -48145,6 +48210,9 @@ function refreshFunVarButtons() {
             });
         }
     }
+    else if (CONFIG_CUSTOM_FUNCTIONS) {
+        varXButton.textContent = "x";
+    }
     if (CONFIG_CUSTOM_FUNCTIONS) {
         if (!isInvert) { // read
             forEach.call("fg", (ch, idx) => {
@@ -48153,7 +48221,7 @@ function refreshFunVarButtons() {
         }
         else { // write
             forEach.call("fg", (ch, idx) => {
-                funButtons[idx].textContent = "→" + ch;
+                funButtons[idx].textContent = "→" + ch + "(x)";
             });
         }
     }
@@ -48789,6 +48857,7 @@ if (CONFIG_CUSTOM_FUNCTIONS) {
                 appendFunction(button.dataset.fun);
             }
             else {
+                calculateResultWithFunction(true, button.dataset.fun);
             }
             focusExpression();
         });
@@ -48813,28 +48882,28 @@ if (CONFIG_VARIABLES) {
 }
 else {
     varButtons.forEach(button => button.disabled = true);
+    if (CONFIG_CUSTOM_FUNCTIONS) {
+        varXButton.disabled = false;
+        varXButton.addEventListener("click", () => {
+            appendConst("x");
+            focusExpression();
+        });
+    }
 }
-function disallowScroll(element) {
-    let eLastScrollLeft = 0;
-    let eHaveFocus = false;
-    element.addEventListener("scroll", () => {
-        let lastScrollLeft = eLastScrollLeft;
-        eLastScrollLeft = element.scrollLeft;
-        if (element.scrollLeft === 0 && !eHaveFocus && lastScrollLeft !== 0) {
-            element.scrollLeft = lastScrollLeft;
-        }
-    });
-    element.addEventListener("focus", () => {
-        eHaveFocus = true;
-        if (element === exprInput) {
-            needEnterNewExpr = false;
-        }
-    });
-    element.addEventListener("blur", () => {
-        eHaveFocus = false;
-    });
-}
-disallowScroll(exprInput);
+exprInput.addEventListener("scroll", () => {
+    let lastScrollLeft = eLastScrollLeft;
+    eLastScrollLeft = exprInput.scrollLeft;
+    if (exprInput.scrollLeft === 0 && !eHaveFocus && lastScrollLeft !== 0) {
+        exprInput.scrollLeft = lastScrollLeft;
+    }
+});
+exprInput.addEventListener("focus", () => {
+    eHaveFocus = true;
+    needEnterNewExpr = false;
+});
+exprInput.addEventListener("blur", () => {
+    eHaveFocus = false;
+});
 exprInput.addEventListener("pointerdown", () => {
     needEnterNewExpr = false;
 });
@@ -55058,7 +55127,7 @@ const CONFIG_TRIG_INV = true;
 const CONFIG_HYP = true;
 const CONFIG_HYP_INV = true;
 const CONFIG_VARIABLES = true;
-const CONFIG_CUSTOM_FUNCTIONS = false;
+const CONFIG_CUSTOM_FUNCTIONS = true;
 // Switches
 const CONFIG_SW_INV = true;
 const CONFIG_SW_HYP = true;

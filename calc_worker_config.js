@@ -51,7 +51,7 @@ const CONFIG_TRIG_INV = true;
 const CONFIG_HYP = true;
 const CONFIG_HYP_INV = true;
 const CONFIG_VARIABLES = true;
-const CONFIG_CUSTOM_FUNCTIONS = false;
+const CONFIG_CUSTOM_FUNCTIONS = true;
 // Switches
 const CONFIG_SW_INV = true;
 const CONFIG_SW_HYP = true;
@@ -685,14 +685,15 @@ function urToBigInt(ur) {
     }
     return null;
 }
-function preprocessRpnResult(rpnResult, variables, definedFunctions) {
+function preprocessRpnResult(rpnResult, degreeMode, variables, definedFunctions, noPosInError, isFun) {
+    rpnResult = [...rpnResult];
     for (let i = 0; i < rpnResult.length; i++) {
         const rpnItem = rpnResult[i];
         const token = rpnItem[0];
         const loc = rpnItem[1];
         if (!binaryOps.has(token) && !unaryOps.has(token)) {
             if (functions.has(token)) {
-                // Functions cannot be preprocessed
+                // Functions cannot be preprocessed before variables
             }
             else {
                 const firstChar = token[0];
@@ -707,7 +708,10 @@ function preprocessRpnResult(rpnResult, variables, definedFunctions) {
                 }
                 else {
                     let hasVariable = false;
-                    if (CONFIG_VARIABLES && variables) {
+                    if (CONFIG_CUSTOM_FUNCTIONS && isFun && token == "x") {
+                        hasVariable = true;
+                    }
+                    else if ((CONFIG_VARIABLES || (CONFIG_CUSTOM_FUNCTIONS && token == "x")) && variables) {
                         switch (token) {
                             case "a":
                             case "b":
@@ -734,12 +738,65 @@ function preprocessRpnResult(rpnResult, variables, definedFunctions) {
                         }
                     }
                     if (!hasVariable)
-                        throw new Error("Unknown variable '" + token + "' at position [" + loc + "]");
+                        throw new Error("Unknown variable '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
                 }
             }
         }
     }
-    return rpnResult;
+    // process functions && check expression
+    const stack = [];
+    for (let i = 0; i < rpnResult.length; i++) {
+        const rpnItem = rpnResult[i];
+        const token = rpnItem[0];
+        const loc = rpnItem[1];
+        if (binaryOps.has(token)) {
+            if (stack.length < 2) {
+                throw new Error("Insufficient number of parameters for operator '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
+            }
+            const arg1 = stack.pop();
+            const arg0 = stack.pop();
+            stack.push([...arg0, ...arg1, rpnItem]);
+        }
+        else if (unaryOps.has(token)) {
+            if (stack.length < 1) {
+                throw new Error("Insufficient number of parameters for operator '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
+            }
+            const arg0 = stack.pop();
+            stack.push([...arg0, rpnItem]);
+        }
+        else if (functions.has(token)) {
+            if (stack.length < 1) {
+                throw new Error("Insufficient number of parameters for function '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
+            }
+            let hasFunction = false;
+            if (CONFIG_CUSTOM_FUNCTIONS && definedFunctions) {
+                let funRpn = definedFunctions[token];
+                if (funRpn) {
+                    try {
+                        const arg0 = stack.pop();
+                        stack.push(preprocessRpnResult(funRpn, degreeMode, { x: arg0 }, undefined, true, isFun));
+                        hasFunction = true;
+                    }
+                    catch (e) {
+                        console.error(e);
+                        throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
+                    }
+                }
+            }
+            if (!hasFunction) {
+                const arg0 = stack.pop();
+                stack.push([...arg0, rpnItem]);
+            }
+        }
+        else {
+            // number / constants
+            stack.push([rpnItem]);
+        }
+    }
+    if (stack.length != 1) {
+        throw new Error("Invalid stack length: " + stack.length);
+    }
+    return stack.pop();
 }
 function createUR(expr, degreeMode, variables, definedFunctions, noPosInError) {
     let rpnResult;
@@ -753,7 +810,7 @@ function createUR(expr, degreeMode, variables, definedFunctions, noPosInError) {
     else {
         rpnResult = expr;
     }
-    rpnResult = preprocessRpnResult(rpnResult, variables);
+    rpnResult = preprocessRpnResult(rpnResult, degreeMode, variables, definedFunctions, noPosInError);
     const len = rpnResult.length;
     const stack = [];
     for (let i = 0; i < len; i++) {
@@ -972,23 +1029,7 @@ function createUR(expr, degreeMode, variables, definedFunctions, noPosInError) {
                         stack.push(getDivide(getLn(getDivide(getAdd(X.ONE, arg0), getSub(X.ONE, arg0))), X.TWO));
                         break;
                     default:
-                        let hasFunction = false;
-                        if (CONFIG_CUSTOM_FUNCTIONS && definedFunctions) {
-                            let funRpn = definedFunctions[token];
-                            if (funRpn) {
-                                hasFunction = true;
-                                try {
-                                    stack.push(createUR(funRpn, degreeMode, { x: arg0 }, undefined, true)[0]);
-                                }
-                                catch (e) {
-                                    console.error(e);
-                                    throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
-                                }
-                            }
-                        }
-                        if (!hasFunction) {
-                            throw new Error("Undefined Function: " + token);
-                        }
+                        throw new Error("Undefined Function: " + token);
                 }
             }
             catch (e) {
@@ -1009,35 +1050,7 @@ function createUR(expr, degreeMode, variables, definedFunctions, noPosInError) {
                 stack.push(X.PI);
             }
             else {
-                let hasVariable = false;
-                if (CONFIG_VARIABLES && variables) {
-                    switch (token) {
-                        case "a":
-                        case "b":
-                        case "c":
-                        case "i":
-                        case "j":
-                        case "k":
-                        case "m":
-                        case "n":
-                        case "x":
-                        case "y":
-                        case "z":
-                            let variableRpn = variables[token];
-                            if (variableRpn) {
-                                hasVariable = true;
-                                try {
-                                    stack.push(createUR(variableRpn, degreeMode, undefined, undefined, true)[0]);
-                                }
-                                catch (e) {
-                                    console.error(e);
-                                    throw new Error(e.message + (!noPosInError ? " at position [" + loc + "]" : ""));
-                                }
-                            }
-                    }
-                }
-                if (!hasVariable)
-                    throw new Error("Unknown variable '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
+                throw new Error("Unknown variable '" + token + "'" + (!noPosInError ? " at position [" + loc + "]" : ""));
             }
         }
     }
@@ -1068,6 +1081,7 @@ onmessage = function (e) {
                 });
             }
             catch (e) {
+                console.error(e);
                 postWorkerMessage({
                     type: "createUR",
                     id: msg.id,
@@ -1131,6 +1145,34 @@ onmessage = function (e) {
             }
             break;
         }
+        case "createFunRpn":
+            try {
+                if (!CONFIG_CUSTOM_FUNCTIONS) {
+                    throw new Error("Unsupported Operation");
+                }
+                let rpnResult = preprocessRpnResult(tokenToRpn(tokenize(msg.expr)), msg.degreeMode, msg.variables, msg.functions, false, true);
+                postWorkerMessage({
+                    type: "createFunRpn",
+                    id: msg.id,
+                    uid: msg.uid,
+                    expr: msg.expr,
+                    degreeMode: msg.degreeMode,
+                    success: true,
+                    rpnResult: rpnResult,
+                });
+            }
+            catch (e) {
+                console.error(e);
+                postWorkerMessage({
+                    type: "createFunRpn",
+                    id: msg.id,
+                    uid: msg.uid,
+                    expr: msg.expr,
+                    degreeMode: msg.degreeMode,
+                    error: String(e)
+                });
+            }
+            break;
     }
 };
 postWorkerMessage({ type: "init" });
