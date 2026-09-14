@@ -48193,6 +48193,7 @@ function focusExpression() {
                 }
             };
             document.addEventListener("scroll", scrollListener, true);
+            calc_setTimeout(() => document.removeEventListener("scroll", scrollListener, true), 100);
         }
         exprInput.focus();
     }
