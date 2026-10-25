@@ -49105,13 +49105,19 @@ addEventListener("message", (e) => {
     }
 });
 let sw = null;
+function addManifest() {
+    document.querySelector("link[rel='manifest']").href = "manifest.webmanifest";
+}
 function registerSw(isUser) {
     if ("serviceWorker" in navigator && sw == null) {
         navigator.serviceWorker.register("/sw.js").then((reg) => {
             sw = reg;
             getElementById("update-sw-container").hidden = false;
-            if (isUser)
+            addManifest();
+            if (isUser) {
+                showPwaMessage();
                 navigator.storage.persist();
+            }
         });
     }
 }
@@ -49120,7 +49126,18 @@ function updateSw() {
         sw.update().then(() => location.reload());
 }
 function onPwaLinkClick() {
-    registerSw(true);
+    addManifest();
+    if (sw == null) {
+        if (muiPlugin.showAlert) {
+            showMessage(crL10N["installPwaTitle"] || "Install as Offline App", crL10N["installPwaLoading"] || "Loading...");
+        }
+        registerSw(true);
+    }
+    else {
+        showPwaMessage();
+    }
+}
+function showPwaMessage() {
     const installDesc = (navigator.userAgent.indexOf("Firefox") >= 0 ? (crL10N["installPwaDescFirefox"] || "Firefox might not support this feature.\n") : "") +
         (crL10N["installPwaDesc"] || ("Follow the instructions below to install CRCalc.js as offline app. \n" +
             "On desktop: click the 'Install' button on the right side of the address bar, or go to your browser menu → 'Cast, save & share' → 'Install' or a similar option.\n" +
